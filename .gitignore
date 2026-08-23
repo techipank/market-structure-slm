@@ -1,0 +1,22 @@
+# venv
+.venv/
+venv/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# data artifacts (regenerable; may carry licensing restrictions)
+data/
+mlruns/
+wandb/

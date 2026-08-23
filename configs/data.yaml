@@ -1,0 +1,42 @@
+# Data pipeline configuration.
+# Thresholds here are recorded into every validation report so old reports
+# remain interpretable.
+
+paths:
+  raw_dir: data/raw
+  report_dir: data/reports
+
+defaults:
+  interval: 1d
+  start: "2015-01-01"
+  # null = up to today. The most recent year is reserved as the holdout test
+  # split, so the series must run to the present.
+  end: null
+
+thresholds:
+  # Minimum |open - prev_close| / prev_close before a gap is even considered.
+  min_gap_pct: 0.02
+  # Robust z-score multiplier: cutoff = median + k * 1.4826 * MAD
+  gap_mad_multiplier: 8.0
+  # Single-bar (high - low) / close above this is flagged.
+  max_bar_range_pct: 0.25
+  # Consecutive zero-volume bars above this count are flagged.
+  max_zero_volume_run: 5
+  # Daily+ gaps up to this many business days are treated as exchange holidays
+  # (INFO). Longer gaps are unexplained holes (WARNING).
+  max_holiday_business_days: 3
+
+symbols:
+  - symbol: SPY          # US large-cap ETF, deep liquidity, trending + ranging regimes
+  - symbol: QQQ          # US tech ETF, higher volatility than SPY
+  - symbol: AAPL         # single name, has splits and earnings gaps
+  - symbol: TLT          # long bonds, different regime behaviour from equities
+  - symbol: GLD          # gold, low correlation to the above
+  - symbol: "^VIX"       # volatility index: no volume, useful as a regime input
+  # Intraday example. yfinance limits 1h history to ~730 days, so it uses
+  # `period` rather than the default start/end.
+  - symbol: SPY
+    interval: 1h
+    period: 720d
+    start: null
+    end: null
