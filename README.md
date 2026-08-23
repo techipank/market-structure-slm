@@ -129,13 +129,61 @@ one period stale by design.
 - [docs/market_context.md](docs/market_context.md) — field-by-field data
   dictionary, generated from the schema.
 
+## Teacher LLM
+
+Turns a `MarketContext` into a structured analysis via OpenRouter. The model is
+configured, never hardcoded:
+
+```bash
+cp .env.example .env
+```
+
+Fill in `OPENROUTER_API_KEY` and `TEACHER_MODEL`. `.env` is gitignored.
+
+Render the exact prompt and estimate its size without calling anything:
+
+```bash
+.venv/Scripts/msteacher.exe dry-run data/raw/SPY_1d.csv --show
+```
+
+Run the teacher over one bar:
+
+```bash
+.venv/Scripts/msteacher.exe analyse data/raw/SPY_1d.csv --bar -1
+```
+
+Output is validated against a strict pydantic schema, and every number the
+model states is checked against the context it was given. Both the analysis
+and its grounding report come back — a badly grounded analysis is flagged,
+not silently discarded.
+
+### Nothing the teacher says is trusted
+
+- **Structured output** is requested with a strict JSON Schema, falling back to
+  JSON mode and then to prompting. Which mode succeeded is recorded, because a
+  model that needed the fallback is not comparable to one that did not.
+- **Validation failures trigger a repair loop**: pydantic's errors are handed
+  back to the model and it retries, bounded. Attempt counts are recorded.
+- **Grounding is verified**: the schema forces every numeric claim into a field
+  that names its source path, so checking is an exact lookup rather than a
+  regex guess. Prose fields must contain no digits at all.
+- **Full lineage** on every result: model requested and resolved, serving
+  provider, structured mode, prompt version and hash, engine version, params
+  fingerprint, tokens, cost, latency, every attempt.
+
+All teacher tests run offline against a stub provider — no network, no key,
+no cost.
+
+- [docs/teacher.md](docs/teacher.md) — structured-output mechanisms, schema
+  design for cheap verification, prompt choices, cost per example.
+
 ## Layout
 
 ```
 configs/         YAML config (thresholds, symbols). No secrets, ever.
 data_pipeline/   Ingest, schema contract, validators, reports.
 market_engine/   Deterministic indicators, structure, regime, setups.
-teacher/         Teacher LLM over OpenRouter, prompts, generation.
+teacher/         Teacher LLM over OpenRouter: prompts, schema, grounding.
 datasets/        Quality pipeline and chronological splits.
 training/        Base model baseline and LoRA fine-tuning.
 evaluation/      Benchmark suite.
