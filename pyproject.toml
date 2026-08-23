@@ -23,9 +23,10 @@ dev = [
 
 [project.scripts]
 msdata = "data_pipeline.cli:main"
+msengine = "market_engine.cli:main"
 
 [tool.setuptools]
-packages = ["data_pipeline"]
+packages = ["data_pipeline", "market_engine"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,45 @@
+# Market engine parameters. Hashed into a fingerprint stamped on every emitted
+# context, so contexts built with different settings are never silently mixed.
+
+# --- indicators ---
+ema_periods: [5, 20, 50, 100, 200]
+rsi_period: 14
+atr_period: 14
+return_periods: [1, 5, 20]
+realized_vol_window: 20
+volume_sma_window: 20
+
+# --- swings ---
+# Fractal half-width. Also the confirmation lag: a swing is invisible to the
+# engine for this many bars after it prints.
+swing_lookback: 3
+# Swings closer than this many ATR apart are "equal" (EQH/EQL) rather than a
+# higher high or lower low.
+equal_level_atr: 0.15
+
+# --- support / resistance ---
+level_cluster_atr: 0.5
+level_min_touches: 2
+max_levels_per_side: 4
+
+# --- regime ---
+atr_percentile_window: 252
+atr_percentile_min_periods: 60
+efficiency_window: 20
+trend_er_min: 0.35
+range_er_max: 0.20
+
+# --- setups ---
+event_recency_bars: 10
+level_proximity_atr: 0.5
+# Must both appear in ema_periods above, or the engine refuses to start.
+setup_fast_ema: 20
+setup_slow_ema: 50
+
+# --- context payload (drives teacher prompt cost) ---
+ohlcv_window_bars: 60
+max_swings_in_context: 8
+
+# --- rounding ---
+price_decimals: 4
+ratio_decimals: 4

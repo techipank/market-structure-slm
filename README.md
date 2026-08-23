@@ -82,12 +82,59 @@ trading calendar, which the pipeline does not carry. Their thresholds live in
 adjustment semantics, and this source's known quality quirks. Reproduce by
 re-fetching.
 
+## Market engine
+
+Turns validated candles into a versioned `MarketContext` JSON object:
+indicators, swing structure (HH/HL/LH/LL), BOS and CHoCH, support and
+resistance, volatility and trend regime, higher-timeframe context, and
+rule-based candidate setups.
+
+Human-readable summary of what the engine sees in each file:
+
+```bash
+.venv/Scripts/msengine.exe summary
+```
+
+Emit a context for the most recent bar:
+
+```bash
+.venv/Scripts/msengine.exe context data/raw/SPY_1d.csv --bar -1
+```
+
+Regenerate the data dictionary from the schema:
+
+```bash
+.venv/Scripts/msengine.exe schema
+```
+
+The engine refuses to run on a file whose validation verdict is FAIL. Features
+computed from impossible candles look plausible and are undetectable by the
+time anyone notices the model is wrong.
+
+### Causality
+
+Every value in a context for bar `t` is a function of bars `0..t` only, and
+that is enforced by a **truncation-invariance test**: computing the context
+with the full series and with every later bar deleted must give an identical
+result. The test was checked against two deliberately injected look-ahead
+leaks and caught both.
+
+Swings carry both the bar they printed on and the bar they became *knowable*
+on (`index + swing_lookback`); nothing references a swing before it confirms.
+The higher-timeframe view exposes only fully closed periods, so it is up to
+one period stale by design.
+
+- [docs/market_engine.md](docs/market_engine.md) — definitions, the BOS/CHoCH
+  distinction, calibration against real data, payload cost.
+- [docs/market_context.md](docs/market_context.md) — field-by-field data
+  dictionary, generated from the schema.
+
 ## Layout
 
 ```
 configs/         YAML config (thresholds, symbols). No secrets, ever.
 data_pipeline/   Ingest, schema contract, validators, reports.
-market_engine/   Deterministic indicators and price-action structure.
+market_engine/   Deterministic indicators, structure, regime, setups.
 teacher/         Teacher LLM over OpenRouter, prompts, generation.
 datasets/        Quality pipeline and chronological splits.
 training/        Base model baseline and LoRA fine-tuning.
