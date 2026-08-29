@@ -23,20 +23,428 @@ thresholds:
   # Consecutive zero-volume bars above this count are flagged.
   max_zero_volume_run: 5
   # Daily+ gaps up to this many business days are treated as exchange holidays
-  # (INFO). Longer gaps are unexplained holes (WARNING).
-  max_holiday_business_days: 3
+  # (INFO). Longer gaps are unexplained holes (WARNING). NSE observes far more
+  # holidays than US equity markets and several are clustered, so this is
+  # calibrated against NSE data rather than carried over from the US default.
+  # See docs/data_sources.md.
+  max_holiday_business_days: 4
 
+# NSE (India) universe. Chosen empirically, not by reputation: two years of
+# daily bars were screened for median turnover ("most active") and median ATR%
+# ("most volatile"), then filtered for sector spread. Screen and findings are
+# written up in docs/data_sources.md.
+#
+# Median ATR% is the volatility measure rather than standard deviation of
+# returns, because two otherwise-qualifying candidates (VEDL, TRENT) carry
+# unadjusted corporate actions that inflate a stdev figure by 3-16x while
+# leaving the robust measure untouched.
 symbols:
-  - symbol: SPY          # US large-cap ETF, deep liquidity, trending + ranging regimes
-  - symbol: QQQ          # US tech ETF, higher volatility than SPY
-  - symbol: AAPL         # single name, has splits and earnings gaps
-  - symbol: TLT          # long bonds, different regime behaviour from equities
-  - symbol: GLD          # gold, low correlation to the above
-  - symbol: "^VIX"       # volatility index: no volume, useful as a regime input
-  # Intraday example. yfinance limits 1h history to ~730 days, so it uses
-  # `period` rather than the default start/end.
-  - symbol: SPY
+  # Consumer tech. Highest combined activity+volatility score in the screen
+  # (ATR 3.40%, turnover ~Rs.979cr). Listed 2021-07, so ~5y of history.
+  - symbol: ETERNAL.NS
+
+  # IT services. Second-highest turnover of any Nifty 50 name (~Rs.1141cr)
+  # while still volatile (ATR 2.23%) - the liquid anchor of the set.
+  - symbol: INFY.NS
+
+  # Automotive. ATR 2.51%, turnover ~Rs.765cr.
+  - symbol: M&M.NS
+
+  # Private bank. Included for regime diversity as much as volatility: the
+  # 2025 accounting disclosure produced a sustained downtrend and a
+  # high-volatility regime, which the evaluation categories need examples of.
+  - symbol: INDUSINDBK.NS
+
+  # Metals. A commodity-driven cycle that trends and ranges on a different
+  # rhythm from the consumption and financial names above.
+  - symbol: HINDALCO.NS
+
+  # Infrastructure conglomerate. ATR 2.84%; repeated event-driven extremes
+  # supply the EXTREME volatility stratum.
+  #
+  # History starts after the 2015-06 demerger (Ports, Power and Transmission
+  # were spun out) rather than at the global 2015-01-01. yfinance does not
+  # adjust for it, leaving a 220% discontinuity: 97.64 -> 312.39 on
+  # 2015-06-03. The bar itself sits inside the indicator warm-up and would
+  # never be sampled, but an EMA-200 spanning it blends two different
+  # companies for roughly two hundred bars afterwards. Starting clean costs
+  # five months of history and removes the problem entirely.
+  - symbol: ADANIENT.NS
+    start: "2015-07-01"
+
+  # --- second tranche -------------------------------------------------
+  # Added to widen the pool once the candle window moved to 100 bars. At that
+  # window, non-overlapping prompts need 100 bars of separation, and six
+  # symbols could only supply 106 examples with some strata down to a single
+  # case. Four more sectors restores the count without compromising either
+  # the window or the separation rule.
+
+  # NBFC. ATR 2.94%, turnover ~Rs.424cr - the highest robust volatility of any
+  # candidate that was not disqualified for a corporate action.
+  - symbol: SHRIRAMFIN.NS
+
+  # Healthcare. ATR 2.87%; a sector whose drivers are unrelated to the
+  # financial and industrial names above.
+  - symbol: MAXHEALTH.NS
+
+  # Real estate. Rate-sensitive and strongly cyclical, so it contributes
+  # sustained trends in both directions.
+  - symbol: DLF.NS
+
+  # Lending. Turnover ~Rs.712cr, ATR 2.39% - a large, liquid counterweight to
+  # the smaller high-volatility names.
+  - symbol: BAJFINANCE.NS
+
+
+  # --- third tranche: universe expansion for dataset generation ---------
+  # The corpus is bounded by bars, not by ambition. Ten symbols supply 23,706
+  # pre-2025 bars, and the separation rule - no two examples may share a
+  # candle, so 100 bars apart at a 100-bar window - caps that at ~237
+  # examples. Relaxing separation would buy count without buying information,
+  # because overlapping windows are near-duplicates. Widening the universe is
+  # the only lever that adds independent examples.
+  #
+  # Chosen by `msdata screen` (report: data/reports/screen.csv), not by hand:
+  # 186 candidates measured over two years, then filtered to those clear of
+  # the corporate-action detector, above a Rs.100cr median turnover floor,
+  # ranked on log(turnover) x median ATR%, and capped at three per sector so
+  # the set cannot collapse into one correlated bloc. Numbers below are that
+  # screen's, and are reproducible by re-running it.
+
+  # automotive
+  - symbol: MOTHERSON.NS    # ATR 3.06%, turnover ~Rs.200cr
+
+  # capital goods
+  - symbol: BHEL.NS    # ATR 3.35%, turnover ~Rs.262cr
+
+  # consumer tech
+  - symbol: SWIGGY.NS    # ATR 3.97%, turnover ~Rs.362cr
+  - symbol: PAYTM.NS    # ATR 3.64%, turnover ~Rs.414cr
+  - symbol: POLICYBZR.NS    # ATR 3.50%, turnover ~Rs.220cr
+
+  # defence aero
+  - symbol: MAZDOCK.NS    # ATR 3.55%, turnover ~Rs.407cr
+  - symbol: DATAPATTNS.NS    # ATR 4.52%, turnover ~Rs.107cr
+  - symbol: COCHINSHIP.NS    # ATR 3.90%, turnover ~Rs.141cr
+
+  # diversified
+  - symbol: ADANIGREEN.NS    # ATR 3.62%, turnover ~Rs.249cr
+  - symbol: SUZLON.NS    # ATR 3.44%, turnover ~Rs.317cr
+  - symbol: JIOFIN.NS    # ATR 2.53%, turnover ~Rs.370cr
+
+  # energy oil
+  - symbol: HINDPETRO.NS    # ATR 2.99%, turnover ~Rs.202cr
+  - symbol: OIL.NS    # ATR 3.20%, turnover ~Rs.118cr
+
+  # exchanges
+  - symbol: BSE.NS    # ATR 3.72%, turnover ~Rs.1178cr
+  - symbol: ANGELONE.NS    # ATR 3.80%, turnover ~Rs.218cr
+  - symbol: MCX.NS    # ATR 3.29%, turnover ~Rs.404cr
+
+  # fmcg
+  - symbol: VBL.NS    # ATR 2.86%, turnover ~Rs.275cr
+
+  # infrastructure
+  - symbol: RVNL.NS    # ATR 3.57%, turnover ~Rs.195cr
+
+  # it services
+  - symbol: COFORGE.NS    # ATR 3.10%, turnover ~Rs.319cr
+  - symbol: PERSISTENT.NS    # ATR 3.08%, turnover ~Rs.246cr
+  - symbol: MPHASIS.NS    # ATR 3.05%, turnover ~Rs.123cr
+
+  # metals mining
+  - symbol: NATIONALUM.NS    # ATR 3.55%, turnover ~Rs.252cr
+  - symbol: SAIL.NS    # ATR 3.15%, turnover ~Rs.209cr
+  - symbol: HINDZINC.NS    # ATR 3.00%, turnover ~Rs.156cr
+
+  # nbfc finance
+  - symbol: PFC.NS    # ATR 2.88%, turnover ~Rs.269cr
+  - symbol: CHOLAFIN.NS    # ATR 2.98%, turnover ~Rs.220cr
+  - symbol: RECLTD.NS    # ATR 2.87%, turnover ~Rs.264cr
+
+  # power utilities
+  - symbol: ADANIPOWER.NS    # ATR 3.46%, turnover ~Rs.252cr
+  - symbol: ADANIENSOL.NS    # ATR 3.60%, turnover ~Rs.167cr
+  - symbol: JSWENERGY.NS    # ATR 3.13%, turnover ~Rs.137cr
+
+  # private bank
+  - symbol: BANDHANBNK.NS    # ATR 3.02%, turnover ~Rs.130cr
+
+  # public bank
+  - symbol: CANBK.NS    # ATR 2.67%, turnover ~Rs.269cr
+  - symbol: UNIONBANK.NS    # ATR 2.94%, turnover ~Rs.154cr
+
+  # real estate
+  - symbol: LODHA.NS    # ATR 3.61%, turnover ~Rs.147cr
+  - symbol: GODREJPROP.NS    # ATR 3.29%, turnover ~Rs.152cr
+  - symbol: PRESTIGE.NS    # ATR 3.43%, turnover ~Rs.107cr
+
+  # telecom media
+  - symbol: IDEA.NS    # ATR 4.49%, turnover ~Rs.406cr
+  - symbol: ZEEL.NS    # ATR 3.92%, turnover ~Rs.110cr
+  - symbol: INDUSTOWER.NS    # ATR 2.90%, turnover ~Rs.233cr
+
+  # transport logistics
+  - symbol: INDIGO.NS    # ATR 2.56%, turnover ~Rs.447cr
+
+  # Intraday resolution on the most liquid name in the set. yfinance caps
+  # hourly history at ~730 days regardless of exchange.
+  - symbol: INFY.NS
     interval: 1h
     period: 720d
     start: null
     end: null
+
+
+  # --- fourth tranche: scaling the corpus -------------------------------
+  # 655 accepted examples was thin for supervised fine-tuning, and the only
+  # lever that adds *independent* examples is more instruments - overlapping
+  # windows would inflate the count without adding information.
+  #
+  # These come from the same `msdata screen` run as the third tranche
+  # (data/reports/screen.csv), so no new measurement was needed: they are the
+  # candidates that were clean, above the Rs.100cr turnover floor, and left
+  # over once that tranche hit its per-sector cap. The cap is now applied to
+  # the whole universe rather than per tranche, existing members included, so
+  # no sector can dominate as the set grows.
+
+  # automotive
+  - symbol: ASHOKLEY.NS    # ATR 2.73%, turnover ~Rs.185cr
+  - symbol: HEROMOTOCO.NS    # ATR 2.46%, turnover ~Rs.280cr
+  - symbol: BHARATFORG.NS    # ATR 2.77%, turnover ~Rs.145cr
+  - symbol: TVSMOTOR.NS    # ATR 2.47%, turnover ~Rs.220cr
+  - symbol: BAJAJ-AUTO.NS    # ATR 2.19%, turnover ~Rs.318cr
+  - symbol: EICHERMOT.NS    # ATR 2.24%, turnover ~Rs.275cr
+
+  # capital goods
+  - symbol: KEI.NS    # ATR 3.05%, turnover ~Rs.117cr
+  - symbol: ABB.NS    # ATR 2.82%, turnover ~Rs.173cr
+  - symbol: CUMMINSIND.NS    # ATR 2.72%, turnover ~Rs.182cr
+  - symbol: SIEMENS.NS    # ATR 2.83%, turnover ~Rs.144cr
+  - symbol: POLYCAB.NS    # ATR 2.48%, turnover ~Rs.206cr
+  - symbol: HAVELLS.NS    # ATR 2.32%, turnover ~Rs.114cr
+
+  # cement
+  - symbol: AMBUJACEM.NS    # ATR 2.52%, turnover ~Rs.107cr
+  - symbol: ULTRACEMCO.NS    # ATR 1.97%, turnover ~Rs.297cr
+  - symbol: GRASIM.NS    # ATR 2.09%, turnover ~Rs.160cr
+
+  # chemicals
+  - symbol: UPL.NS    # ATR 2.71%, turnover ~Rs.121cr
+  - symbol: SRF.NS    # ATR 2.52%, turnover ~Rs.120cr
+
+  # consumer tech
+  - symbol: NYKAA.NS    # ATR 2.86%, turnover ~Rs.120cr
+
+  # defence aero
+  - symbol: BDL.NS    # ATR 3.67%, turnover ~Rs.158cr
+  - symbol: HAL.NS    # ATR 2.59%, turnover ~Rs.526cr
+  - symbol: BEL.NS    # ATR 2.41%, turnover ~Rs.532cr
+
+  # diversified
+  - symbol: YESBANK.NS    # ATR 2.57%, turnover ~Rs.166cr
+
+  # energy oil
+  - symbol: BPCL.NS    # ATR 2.67%, turnover ~Rs.242cr
+  - symbol: ONGC.NS    # ATR 2.43%, turnover ~Rs.279cr
+  - symbol: RELIANCE.NS    # ATR 1.85%, turnover ~Rs.1606cr
+  - symbol: GAIL.NS    # ATR 2.50%, turnover ~Rs.190cr
+  - symbol: IOC.NS    # ATR 2.35%, turnover ~Rs.175cr
+
+  # exchanges
+  # Starts after 2017-07-03, not at its 2017-06-30 listing. The listing bar
+  # prints at exactly twice the scale of every bar after it (261.75 -> 131.07,
+  # a ratio of 0.5008) and the following bar trades a normal 8.2% range, so
+  # this is an unadjusted action or a bad first print, not a 50% crash. The
+  # bar sits inside the indicator warm-up and would never be sampled, but an
+  # EMA-200 spanning it blends two price scales for two hundred bars. Same
+  # reasoning as ADANIENT above.
+  - symbol: CDSL.NS
+    start: "2017-07-03"    # ATR 3.13%, turnover ~Rs.330cr
+  - symbol: CAMS.NS    # ATR 2.99%, turnover ~Rs.116cr
+
+  # fmcg
+  - symbol: GODREJCP.NS    # ATR 2.53%, turnover ~Rs.131cr
+  - symbol: HINDUNILVR.NS    # ATR 2.01%, turnover ~Rs.346cr
+  - symbol: ITC.NS    # ATR 1.76%, turnover ~Rs.519cr
+  - symbol: TATACONSUM.NS    # ATR 2.24%, turnover ~Rs.136cr
+  - symbol: UNITDSPR.NS    # ATR 2.27%, turnover ~Rs.104cr
+  - symbol: BRITANNIA.NS    # ATR 2.07%, turnover ~Rs.162cr
+  - symbol: NESTLEIND.NS    # ATR 2.03%, turnover ~Rs.166cr
+
+  # healthcare
+  - symbol: FORTIS.NS    # ATR 2.67%, turnover ~Rs.117cr
+  - symbol: APOLLOHOSP.NS    # ATR 1.88%, turnover ~Rs.251cr
+
+  # infrastructure
+  - symbol: ADANIPORTS.NS    # ATR 2.43%, turnover ~Rs.288cr
+  - symbol: GMRAIRPORT.NS    # ATR 2.73%, turnover ~Rs.109cr
+  - symbol: LT.NS    # ATR 1.94%, turnover ~Rs.657cr
+
+  # insurance
+  - symbol: ICICIGI.NS    # ATR 2.47%, turnover ~Rs.105cr
+  - symbol: HDFCLIFE.NS    # ATR 2.14%, turnover ~Rs.179cr
+  - symbol: SBILIFE.NS    # ATR 2.09%, turnover ~Rs.168cr
+
+  # it services
+  - symbol: TECHM.NS    # ATR 2.50%, turnover ~Rs.272cr
+  - symbol: HCLTECH.NS    # ATR 2.24%, turnover ~Rs.405cr
+  - symbol: TCS.NS    # ATR 1.99%, turnover ~Rs.843cr
+  - symbol: WIPRO.NS    # ATR 2.31%, turnover ~Rs.275cr
+
+  # metals mining
+  - symbol: NMDC.NS    # ATR 2.83%, turnover ~Rs.164cr
+  - symbol: TATASTEEL.NS    # ATR 2.26%, turnover ~Rs.443cr
+  - symbol: JINDALSTEL.NS    # ATR 2.64%, turnover ~Rs.141cr
+  - symbol: JSWSTEEL.NS    # ATR 2.19%, turnover ~Rs.164cr
+
+  # nbfc finance
+  - symbol: IRFC.NS    # ATR 2.91%, turnover ~Rs.164cr
+  - symbol: HDFCAMC.NS    # ATR 2.65%, turnover ~Rs.196cr
+  - symbol: MUTHOOTFIN.NS    # ATR 2.75%, turnover ~Rs.144cr
+
+  # pharma
+  - symbol: LAURUSLABS.NS    # ATR 2.77%, turnover ~Rs.149cr
+  - symbol: GLENMARK.NS    # ATR 2.81%, turnover ~Rs.109cr
+  - symbol: DIVISLAB.NS    # ATR 2.30%, turnover ~Rs.221cr
+  - symbol: AUROPHARMA.NS    # ATR 2.58%, turnover ~Rs.122cr
+  - symbol: LUPIN.NS    # ATR 2.26%, turnover ~Rs.190cr
+  - symbol: DRREDDY.NS    # ATR 2.16%, turnover ~Rs.204cr
+  - symbol: SUNPHARMA.NS    # ATR 1.92%, turnover ~Rs.357cr
+  - symbol: TORNTPHARM.NS    # ATR 2.34%, turnover ~Rs.104cr
+
+  # power utilities
+  - symbol: NTPC.NS    # ATR 2.23%, turnover ~Rs.373cr
+  - symbol: TATAPOWER.NS    # ATR 2.35%, turnover ~Rs.217cr
+  - symbol: POWERGRID.NS    # ATR 2.19%, turnover ~Rs.320cr
+  - symbol: NHPC.NS    # ATR 2.60%, turnover ~Rs.114cr
+
+  # private bank
+  - symbol: AXISBANK.NS    # ATR 2.01%, turnover ~Rs.761cr
+  - symbol: AUBANK.NS    # ATR 2.61%, turnover ~Rs.162cr
+  - symbol: HDFCBANK.NS    # ATR 1.72%, turnover ~Rs.2053cr
+  - symbol: ICICIBANK.NS    # ATR 1.73%, turnover ~Rs.1485cr
+  - symbol: KOTAKBANK.NS    # ATR 1.95%, turnover ~Rs.628cr
+  - symbol: IDFCFIRSTB.NS    # ATR 2.36%, turnover ~Rs.160cr
+
+  # public bank
+  - symbol: INDIANB.NS    # ATR 3.04%, turnover ~Rs.114cr
+  - symbol: BANKBARODA.NS    # ATR 2.53%, turnover ~Rs.238cr
+  - symbol: PNB.NS    # ATR 2.55%, turnover ~Rs.202cr
+  - symbol: SBIN.NS    # ATR 1.93%, turnover ~Rs.943cr
+
+  # retail apparel
+  - symbol: DMART.NS    # ATR 2.48%, turnover ~Rs.168cr
+
+  # telecom media
+  - symbol: BHARTIARTL.NS    # ATR 1.96%, turnover ~Rs.1033cr
+
+  # --- hourly tranche ---------------------------------------------------
+  # Daily bars across 51 symbols cap the corpus at 715 examples. Hourly bars
+  # on the most liquid names add roughly four hundred more, and add them in a
+  # form that is not simply more of the same: intraday structure has its own
+  # rhythm, and the higher-timeframe code path is exercised against real data
+  # rather than one file.
+  #
+  # Ranked on turnover alone rather than the blended activity+volatility
+  # score used for the daily set. Volatility is not the scarce quality at
+  # this resolution; liquidity is, because a thin name's hourly bars are
+  # mostly gaps and noise.
+  #
+  # yfinance caps hourly history at ~730 days regardless of exchange, so each
+  # of these contributes roughly 2,100 pre-cutoff bars, not a decade.
+  - symbol: BSE.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.1178cr
+  - symbol: ETERNAL.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.977cr
+  - symbol: M&M.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.768cr
+  - symbol: BAJFINANCE.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.713cr
+  - symbol: INDIGO.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.447cr
+  - symbol: SHRIRAMFIN.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.425cr
+  - symbol: PAYTM.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.414cr
+  - symbol: MAZDOCK.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.407cr
+  - symbol: IDEA.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.406cr
+  - symbol: MCX.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.404cr
+  - symbol: HINDALCO.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.382cr
+  - symbol: JIOFIN.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.370cr
+  - symbol: SWIGGY.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.362cr
+  - symbol: INDUSINDBK.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.322cr
+  - symbol: COFORGE.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.319cr
+  - symbol: SUZLON.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.317cr
+  - symbol: VBL.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.275cr
+  - symbol: ADANIENT.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.273cr
+  - symbol: CANBK.NS
+    interval: 1h
+    period: 720d
+    start: null
+    end: null    # turnover ~Rs.269cr

@@ -15,15 +15,30 @@ Every number you state must be copied from the context you were given.
 Not rounded. Not recalculated. Not averaged. Not inferred. Copied.
 
 For each numeric claim you must also name the field it came from, using a
-dotted path such as `indicators.rsi`, `levels[2].price`, or
-`structure.last_event.level`. If you cannot name the field, you may not state
-the number.
+dotted path such as `indicators.rsi` or `structure.last_event.level`. If you
+cannot name the field, you may not state the number.
+
+Two rules about paths, because these are where citations actually go wrong:
+
+1. **Start at a top-level key.** Write `indicators.close_vs_ema.200`, never
+   `close_vs_ema.200`. A path that does not begin at the root of the context
+   is not an address.
+2. **Name list elements, do not count them.** Every level and every swing
+   carries an `id`, and every candle carries its timestamp `t`. Cite
+   `levels.L2.price`, `structure.swings.S4.price`,
+   `ohlcv_window.2016-07-22T00:00:00+00:00.c` - copy the identifier that sits
+   beside the value you are quoting. Do not write `levels[2].price` and hope
+   the position is right; it usually is not.
 
 This is why the prose fields (`statement`, `note`, `condition`, `expectation`,
 `reasoning_summary`, and both `*_explanation` / `*_rationale` fields) must
 contain NO numbers at all. Numbers live in the numeric fields, where they can
-be checked against the source. Write "price is holding above the fifty-period
+be checked against the source. Write "price is holding above the twenty-day
 average", not "price is holding above 452.10".
+
+The one exception is naming an indicator the context actually computed: "the
+200-day EMA" identifies a series and is allowed. "RSI below 55" is a claim
+about the market and is not.
 
 The context is the whole world. If something is absent from it, it does not
 exist for the purposes of this analysis. Do not reach for what a symbol

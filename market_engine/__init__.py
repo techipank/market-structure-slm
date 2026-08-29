@@ -13,7 +13,10 @@ told apart. Bug fixes that change output values count as semantic changes.
 """
 
 ENGINE_VERSION = "1.0.0"
-CONTEXT_SCHEMA_VERSION = "1.0.0"
+# 1.1.0: levels and swings carry a stable `id`, so a citation can name an
+# element instead of counting to it. Additive - every 1.0.0 path still
+# resolves - which is why the minor bumps rather than the major.
+CONTEXT_SCHEMA_VERSION = "1.1.0"
 
 DISCLAIMER = (
     "Deterministic description of historical price data for educational and "

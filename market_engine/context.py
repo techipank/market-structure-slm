@@ -258,6 +258,7 @@ class MarketEngine:
             bias=s.bias[i].value,
             swings=[
                 SwingRef(
+                    id=f"S{position}",
                     index=sw.index,
                     timestamp=_iso(sw.timestamp),
                     price=round(sw.price, p.price_decimals),
@@ -266,7 +267,7 @@ class MarketEngine:
                     confirmed_index=sw.confirmed_index,
                     bars_ago=i - sw.index,
                 )
-                for sw in sorted(recent, key=lambda x: x.index)
+                for position, sw in enumerate(sorted(recent, key=lambda x: x.index))
             ],
             last_event=_event_ref(last, i, p.price_decimals),
             recent_events=[
@@ -296,13 +297,14 @@ class MarketEngine:
         )
         return [
             LevelRef(
+                id=f"L{position}",
                 price=round(lv.price, p.price_decimals),
                 side=lv.side,
                 touches=lv.touches,
                 distance_atr=round(lv.distance_atr, p.ratio_decimals),
                 last_index=lv.last_index,
             )
-            for lv in levels
+            for position, lv in enumerate(levels)
         ]
 
     def _volatility(

@@ -86,6 +86,12 @@ class IndicatorSnapshot(BaseModel):
 
 
 class SwingRef(BaseModel):
+    id: str = Field(
+        description=(
+            "Stable name for this swing within this context, e.g. S0. Cite it as "
+            "structure.swings.S0.price rather than by position."
+        )
+    )
     index: int = Field(description="Positional bar index at which the swing printed.")
     timestamp: str = Field(description="Time of the bar at which the swing printed.")
     price: float = Field(description="Swing price: the bar's high for a HIGH, low for a LOW.")
@@ -156,6 +162,13 @@ class StructureSnapshot(BaseModel):
 
 
 class LevelRef(BaseModel):
+    id: str = Field(
+        description=(
+            "Stable name for this level within this context, e.g. L0. Cite it as "
+            "levels.L0.price rather than by position: counting list indices is the "
+            "one addressing mistake language models make reliably."
+        )
+    )
     price: float = Field(description="Mean price of the clustered swings forming this level.")
     side: str = Field(description="SUPPORT if below the current close, RESISTANCE if above.")
     touches: int = Field(description="Number of confirmed swings in the cluster.")

@@ -39,6 +39,7 @@ from teacher.provider import (
     RateLimited,
     StructuredMode,
     TransientError,
+    Truncated,
     UnsupportedFeature,
     Usage,
 )
@@ -54,7 +55,11 @@ _UNSUPPORTED_HINTS = (
     "structured output",
     "json_schema",
     "does not support",
+    # Both wordings observed in the wild. The documented one is the first;
+    # the second is what a `require_parameters` rejection actually returns,
+    # as a 404 rather than the documented 503.
     "no available model provider meets your routing requirements",
+    "no endpoints found that can handle the requested parameters",
 )
 
 
@@ -68,6 +73,9 @@ class OpenRouterConfig:
 
     model: str
     api_key: str = field(repr=False, default="")
+    #: Overridable so the endpoint can come from the environment like any
+    #: other vendor. Accepts a base URL or a full chat-completions URL.
+    base_url: str = API_URL
     temperature: float = 0.0
     max_tokens: int = 4096
     timeout_seconds: float = 120.0
@@ -77,6 +85,11 @@ class OpenRouterConfig:
     #: Pin to specific provider slugs for reproducibility. Empty = any.
     only_providers: tuple[str, ...] = ()
     allow_fallbacks: bool = True
+    #: Merged into every request body, last, so it can override anything
+    #: built above it. The escape hatch for OpenRouter-wide knobs that vary
+    #: per model - notably `reasoning`, which is how a hybrid model is told
+    #: to think less, or not at all.
+    extra_body: dict[str, Any] = field(default_factory=dict)
     #: Optional attribution headers. Both optional; the title needs the
     #: referer to have any effect.
     referer: str | None = None
@@ -85,6 +98,9 @@ class OpenRouterConfig:
     def __post_init__(self) -> None:
         if not self.model:
             raise ValueError("teacher model is not configured")
+        from teacher.openai_compat import chat_completions_url
+
+        self.base_url = chat_completions_url(self.base_url)
 
     @classmethod
     def from_env(cls, model: str | None = None, **overrides: Any) -> OpenRouterConfig:
@@ -156,6 +172,7 @@ class OpenRouterProvider:
             routing["allow_fallbacks"] = self.config.allow_fallbacks
         if routing:
             body["provider"] = routing
+        body.update(self.config.extra_body)
         return body
 
     # ----------------------------------------------------------- complete
@@ -170,7 +187,34 @@ class OpenRouterProvider:
     ) -> Completion:
         body = self._body(messages, schema, schema_name, mode)
         started = time.monotonic()
-        payload = self._post_with_retries(body)
+        degraded: tuple[str, ...] = ()
+        try:
+            payload = self._post_with_retries(body)
+        except UnsupportedFeature:
+            # `require_parameters` filters on a provider's *declared*
+            # capabilities, not its real ones. Observed on stealth/ox-alpha:
+            # routing refuses a strict json_schema request because the
+            # provider does not advertise structured_outputs, yet the same
+            # request succeeds and returns valid schema-conforming JSON once
+            # the constraint is dropped.
+            #
+            # Retrying without it is safe here in a way it would not be in
+            # general: `response_format` is still sent, and if the provider
+            # silently ignores it the response fails pydantic validation and
+            # the repair loop catches it. The gate was protecting against a
+            # failure mode we already detect downstream, at the cost of
+            # rejecting models that work.
+            if not (self.config.require_parameters and "provider" in body):
+                raise
+            relaxed = dict(body)
+            routing = {k: v for k, v in relaxed["provider"].items()
+                       if k != "require_parameters"}
+            if routing:
+                relaxed["provider"] = routing
+            else:
+                relaxed.pop("provider")
+            payload = self._post_with_retries(relaxed)
+            degraded = ("routing: require_parameters relaxed",)
         elapsed = time.monotonic() - started
 
         choices = payload.get("choices") or []
@@ -179,6 +223,30 @@ class OpenRouterProvider:
         message = choices[0].get("message") or {}
         text = message.get("content") or ""
         if not text.strip():
+            # Distinguish the three ways an empty body happens, because the
+            # remedies are completely different.
+            reasoning = message.get("reasoning") or ""
+            if choices[0].get("finish_reason") == "length":
+                raise Truncated(
+                    f"output truncated at max_tokens={self.config.max_tokens} with no "
+                    f"content produced"
+                    + (
+                        f"; the model emitted {len(reasoning)} characters of reasoning "
+                        "first, so raise max_tokens for this reasoning model"
+                        if reasoning
+                        else ""
+                    )
+                )
+            # An empty body in response to a structured-output request is a
+            # capability failure, not a blip: observed on stealth/ox-alpha,
+            # which returns "" for every `json_object` request while handling
+            # `json_schema` correctly. Classifying it as transient would retry
+            # the identical request four times and then give up, never trying
+            # the mode that works.
+            if mode is not StructuredMode.NONE:
+                raise UnsupportedFeature(
+                    f"model returned an empty message under {mode.value}"
+                )
             raise TransientError("model returned an empty message")
 
         return Completion(
@@ -189,6 +257,7 @@ class OpenRouterProvider:
             latency_seconds=elapsed,
             finish_reason=choices[0].get("finish_reason"),
             served_by=payload.get("provider"),
+            degraded=degraded,
             raw=payload,
         )
 
@@ -201,6 +270,14 @@ class OpenRouterProvider:
                 return self._post(body)
             except (RateLimited, TransientError) as exc:
                 last = exc
+                # A timeout on a slow reasoning model is not bad luck, it is
+                # the request being too big for the deadline. Retrying the
+                # identical request just spends the deadline again: four
+                # attempts at a 120s timeout is eight wasted minutes before
+                # the mode fallback even starts. Fail fast and let the
+                # operator raise timeout_seconds.
+                if "timed out" in str(exc).lower():
+                    break
                 if attempt == self.config.max_retries - 1:
                     break
                 delay = getattr(exc, "retry_after", None)
@@ -214,7 +291,9 @@ class OpenRouterProvider:
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         try:
-            response = self._client.post(API_URL, headers=self._headers(), json=body)
+            response = self._client.post(
+                self.config.base_url, headers=self._headers(), json=body
+            )
         except httpx.TimeoutException as exc:
             raise TransientError(f"request timed out: {exc}") from exc
         except httpx.HTTPError as exc:

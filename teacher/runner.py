@@ -63,6 +63,8 @@ class Attempt:
     mode: str
     ok: bool
     error: str | None = None
+    #: Concessions the provider had to make for this attempt to succeed.
+    degraded: tuple[str, ...] = ()
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost: float | None = None
@@ -172,9 +174,16 @@ class TeacherRunner:
     def render_messages(
         self, context: dict[str, Any], mode: StructuredMode = StructuredMode.JSON_SCHEMA
     ) -> list[dict[str, str]]:
-        """Exposed so the prompt can be inspected, and costed, without calling."""
-        outline = None if mode is StructuredMode.JSON_SCHEMA else self.schema_outline
-        return build_messages(self.template, context, outline)
+        """Exposed so the prompt can be inspected, and costed, without calling.
+
+        The outline goes in for every mode, strict decoding included. Sending
+        `response_format` is not the same as it being honoured: OpenRouter
+        routing can only filter on *declared* capability, and once the
+        require_parameters gate is relaxed the request can land on a provider
+        that ignores the schema entirely. The outline is what keeps that case
+        recoverable rather than unparseable.
+        """
+        return build_messages(self.template, context, self.schema_outline)
 
     def analyse(self, context: dict[str, Any]) -> TeacherResult:
         result = self._blank_result(context)
@@ -250,6 +259,7 @@ class TeacherRunner:
             result.attempts.append(
                 Attempt(
                     len(result.attempts), mode.value, ok=True,
+                    degraded=completion.degraded,
                     prompt_tokens=completion.usage.prompt_tokens,
                     completion_tokens=completion.usage.completion_tokens,
                     cost=completion.usage.cost,
@@ -299,20 +309,77 @@ class TeacherRunner:
 
 
 def parse_analysis(text: str) -> TeacherAnalysis:
-    """Strip fences, parse, validate.
+    """Strip fences, locate the answer object, parse, validate.
 
     Models told "return only JSON" still wrap it in ```json fences often
     enough that not handling it would inflate the failure rate with something
     that is not really a failure of the model's analysis.
+
+    The harder case is a model that emits its chain-of-thought into `content`
+    with no delimiter, then the answer (nvidia/nemotron-3.5-lightning does
+    this whenever the provider ignores `response_format`). Reasoning prose
+    contains braces and fragments of the answer, so spanning from the first
+    `{` to the last `}` splices thinking into the payload and fails on a
+    stray delimiter. Scanning for balanced objects and preferring the last
+    one that validates picks the answer instead.
     """
     cleaned = _FENCE.sub("", text).strip()
-    if not cleaned.startswith("{"):
-        start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start != -1 and end > start:
-            cleaned = cleaned[start : end + 1]
-    payload = json.loads(cleaned)
+    if cleaned.startswith("{"):
+        try:
+            return _validate(json.loads(cleaned))
+        except json.JSONDecodeError:
+            pass  # truncated or followed by more text; fall through to scanning
+
+    error: Exception | None = None
+    for candidate in reversed(_balanced_objects(cleaned)):
+        try:
+            return _validate(json.loads(candidate))
+        except (json.JSONDecodeError, ValidationError) as exc:
+            error = error or exc
+
+    # Nothing parsed. Re-raise on the whole text so the error the repair turn
+    # sees describes what the model actually sent, not a chosen fragment.
+    if error is not None and not isinstance(error, json.JSONDecodeError):
+        raise error
+    return _validate(json.loads(cleaned))
+
+
+def _validate(payload: dict[str, Any]) -> TeacherAnalysis:
     payload.pop("schema_version", None)  # ours to stamp, not the model's
     return TeacherAnalysis.model_validate(payload)
+
+
+def _balanced_objects(text: str) -> list[str]:
+    """Every top-level `{...}` in `text` whose braces balance.
+
+    String-aware, because prose inside the answer legitimately contains
+    braces and a naive depth count would close the object early.
+    """
+    found: list[str] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0:
+                found.append(text[start : index + 1])
+    return found
 
 
 def _format_errors(exc: Exception) -> str:

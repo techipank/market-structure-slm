@@ -1,0 +1,125 @@
+# Model registry. Aliases here are what `--model` takes.
+#
+# Secrets never appear in this file - only the NAMES of the environment
+# variables holding them. Everything here is committed; .env is not.
+#
+# Each *_env accepts a list of candidate variable names, tried in order. The
+# same endpoint tends to get configured under different names by different
+# people, and a forgiving lookup turns "why is my key not being picked up"
+# into a non-event.
+
+endpoints:
+  openrouter:
+    kind: openrouter
+    base_url_env: [LLM_BASE_URL, OPENROUTER_BASE_URL]
+    api_key_env: [LLM_API_KEY, OPENROUTER_API_KEY]
+    options:
+      temperature: 0.0
+      max_tokens: 4096
+      # Route only to providers supporting every parameter we send. Without
+      # it a model that cannot honour response_format may be silently routed
+      # to and answer with unconstrained text.
+      require_parameters: true
+
+  # Xiaomi MiMo, hosted. OpenAI-compatible: confirmed by live call, not just
+  # by the /v1 path convention.
+  #
+  # supports_json_schema started false as the conservative default. A strict
+  # `json_schema` request was then verified working end to end - valid on the
+  # first attempt, no repair, 14s - so it is true. This matters beyond one
+  # saved attempt: JSON_OBJECT constrains shape far more weakly, and a model
+  # scored under a weaker mode is not comparable to one scored under strict
+  # decoding.
+  xiaomi:
+    kind: openai_compatible
+    base_url_env: [XIOMI_BASE_URL, XIAOMI_BASE_URL]
+    api_key_env: [XIOMI_API_KEY, XIAOMI_API_KEY]
+    supports_json_schema: true
+    options:
+      temperature: 0.0
+      max_tokens: 4096
+
+models:
+  alpha:
+    endpoint: openrouter
+    model_env: LLM_MODEL
+    model: "stealth/ox-alpha"
+    options:
+      # A reasoning model. At max_tokens 4096 it spent the entire budget on
+      # 12k characters of reasoning and returned empty content with
+      # finish_reason "length". The budget has to cover reasoning *and* the
+      # answer, so it is far larger here than for a non-reasoning model.
+      max_tokens: 32000
+      # Correspondingly long deadline. The listed throughput is ~25 tok/s, so
+      # a full reasoning pass plus a structured answer can run for many
+      # minutes. The default 120s guaranteed a timeout on every attempt.
+      # NOTE: the true end-to-end latency has not been measured yet - the
+      # measurement run was stopped before it returned. Confirm it with a
+      # single smoke call before starting any fan-out, because it decides
+      # whether a 163-example run is an afternoon or two days.
+      timeout_seconds: 1800
+      # Retries are near-useless on a request this slow: a second attempt
+      # costs another twenty minutes to fail the same way.
+      max_retries: 1
+    note: >
+      Stealth model, free, 1M context, single provider (no routing), P50
+      latency ~4.2s at ~25 tps. Two caveats. Prompts and completions are
+      RETAINED by the third-party operator under OpenRouter's Stealth Model
+      Terms - fine for public price data, worth knowing before sending
+      anything else. And a stealth listing can be withdrawn or re-pointed at
+      a different model without notice, which is why the resolved model id
+      goes into every result's lineage.
+
+  nemotron:
+    endpoint: openrouter
+    model: "nvidia/nemotron-3.5-lightning:free"
+    options:
+      # A hybrid reasoning model, which the name does not advertise, and it
+      # emits the chain-of-thought into `content` with no delimiter. Left on,
+      # it spent 10,832 reasoning tokens before the answer began and then ran
+      # out of budget mid-object; three attempts, none parseable, twenty-one
+      # minutes, three calls out of a 50/day allowance.
+      #
+      # Turning it off is not a compromise here, it is the right shape for
+      # this task: the market engine already did the reasoning
+      # deterministically and the teacher's job is to interpret facts it is
+      # handed. Same example, same prompt, reasoning disabled: valid on the
+      # first attempt, 975 completion tokens, 33 seconds. Twelve times faster.
+      extra_body:
+        reasoning:
+          enabled: false
+      # Measured output is ~1k tokens. The headroom is for the day a routing
+      # change puts reasoning back on: enough to finish the object, not
+      # enough to spend six minutes doing it.
+      max_tokens: 6000
+      timeout_seconds: 300
+      max_retries: 2
+    note: >
+      The ":free" suffix carries OpenRouter's free-variant rate limits
+      (20 req/min, 50 req/day, rising to 1000/day once the account has ever
+      purchased $10+ of credit). At 50/day a 163-example run takes four days;
+      check the account before starting. The Nvidia provider does not declare
+      structured_outputs, so every request trips the require_parameters gate
+      and is retried with routing relaxed; response_format is then accepted
+      and ignored, and the prompt's schema outline is what makes the answer
+      parseable.
+
+  mimo:
+    endpoint: xiaomi
+    model_env: XIOMI_MODEL
+    model: "mimo-v2.5"
+    note: >
+      Xiaomi MiMo v2.5 on the hosted token-plan endpoint. Non-reasoning, and
+      the fastest candidate measured so far: ~14-17s per example, ~1,050
+      completion tokens. Rate limit is 100 req/min, so pacing is set by the
+      other models in a mixed run - `--rpm` applies to the whole run, not per
+      model, so running mimo alone is what uses its headroom. Cost is
+      reported as null rather than zero: the endpoint does not price
+      responses, and "free" and "unpriced" are different facts.
+
+  # Reference point. Not a shortlisted candidate - it exists so a failure on
+  # the others can be attributed to them rather than to this harness.
+  haiku:
+    endpoint: openrouter
+    model: "anthropic/claude-haiku-4.5"
+    note: "known-good reference; run first to validate the pipeline"

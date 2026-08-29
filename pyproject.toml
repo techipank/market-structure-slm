@@ -26,12 +26,14 @@ dev = [
 msdata = "data_pipeline.cli:main"
 msengine = "market_engine.cli:main"
 msteacher = "teacher.cli:main"
+msbench = "evaluation.cli:main"
+msdataset = "dataset.cli:main"
 
 [tool.setuptools.package-data]
 teacher = ["prompts/*/*.md"]
 
 [tool.setuptools]
-packages = ["data_pipeline", "market_engine", "teacher"]
+packages = ["data_pipeline", "market_engine", "teacher", "evaluation", "dataset"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -57,6 +57,11 @@ class Completion:
     #: of the "same model" served by different providers, or at different
     #: quantizations, are not the same experiment.
     served_by: str | None = None
+    #: Concessions made to get a response at all, e.g. relaxing provider
+    #: routing. Recorded because a model that needed one is not strictly
+    #: comparable to a model that did not, and the benchmark should say so
+    #: rather than quietly average them together.
+    degraded: tuple[str, ...] = ()
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -82,6 +87,18 @@ class TransientError(ProviderError):
     """Timeouts, 5xx, provider overload. Worth another attempt."""
 
     retryable = True
+
+
+class Truncated(ProviderError):
+    """The model hit `max_tokens` before producing any answer.
+
+    Its own class because the remedy is neither "retry" nor "use a weaker
+    structured mode" - it is "raise max_tokens". Reasoning models make this
+    common: they spend the output budget thinking and have nothing left to
+    say. Classifying it as transient would retry the identical doomed request;
+    classifying it as unsupported would step down modes that were never the
+    problem.
+    """
 
 
 class UnsupportedFeature(ProviderError):

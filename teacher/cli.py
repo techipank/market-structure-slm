@@ -31,10 +31,16 @@ from teacher.prompt import DEFAULT_PROMPT_VERSION
 from teacher.runner import TeacherRunner
 from teacher.schema import TeacherAnalysis
 
-#: Rough characters-per-token. Every model tokenises differently and this is
-#: not a substitute for the provider's own count - it is a sanity check on
-#: prompt size before spending anything.
+#: Rough characters-per-token for a size sanity-check before spending
+#: anything. Deliberately not a substitute for the provider's own count.
+#:
+#: Calibration: against a real OpenRouter call on a 100-bar context, chars/4
+#: predicted 6,117 input tokens and the provider billed 8,752 - the estimate
+#: ran 43% low. JSON punctuation and long ISO timestamps tokenise far worse
+#: than prose. Treat the number below as a floor, not a forecast, and use
+#: measured `prompt_tokens` from a smoke call for any cost projection.
 CHARS_PER_TOKEN = 4
+MEASURED_UNDERCOUNT = 1.43
 
 
 def _load_env() -> None:
@@ -77,8 +83,10 @@ def _cmd_dry_run(args: argparse.Namespace) -> int:
     print(f"--- response_format schema: {schema_chars} chars "
           f"(~{schema_chars // CHARS_PER_TOKEN} tokens)")
     grand = total + schema_chars
-    print(f"\nestimated input: ~{grand // CHARS_PER_TOKEN} tokens per example")
-    print("(estimate only: every model tokenises differently)")
+    low = grand // CHARS_PER_TOKEN
+    print(f"\nestimated input: ~{low} tokens per example (chars/4 floor)")
+    print(f"                 ~{int(low * MEASURED_UNDERCOUNT)} tokens on measured calibration")
+    print("(estimates only; use measured prompt_tokens from a smoke call to project cost)")
 
     if args.show:
         print("\n" + "=" * 70)

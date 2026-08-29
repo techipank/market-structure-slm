@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -38,12 +39,47 @@ from teacher.schema import TeacherAnalysis
 #: the rule is that prose carries no digits.
 _NUMBER = re.compile(r"(?<![\w.])[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?")
 
-#: Digits that are part of an accepted term rather than a numeric claim.
-#: Kept deliberately short: every entry is a hole in the rule.
-_PROSE_ALLOWANCES = re.compile(
-    r"\b(?:20|50|100|200|5)[ -](?:EMA|period|bar)\b|\bEMA[ -](?:5|20|50|100|200)\b",
-    re.IGNORECASE,
-)
+#: Units that turn a number into the *name* of an indicator rather than a
+#: measurement of the market. "the 200-day EMA" identifies a series; "RSI
+#: below 55" is a claim about where the market is, and stays a violation.
+_PERIOD_UNITS = r"(?:EMA|SMA|MA|period|bar|day|daily|week|weekly|candle|session)s?"
+
+
+def _prose_allowances(context: dict[str, Any] | None) -> re.Pattern[str] | None:
+    """Numbers exempt from the no-digits rule, derived from the context.
+
+    A number that appears as a *key* in the context - `indicators.ema.200`,
+    `indicators.returns.5` - is a configured parameter, not a measurement.
+    Deriving the exemption from the context rather than hardcoding a list
+    means it tracks the engine's parameters automatically, and it cannot
+    excuse a number the engine never used as a period.
+
+    The unit word is still required, so a bare "200" in prose stays a
+    violation; only "the 200-day EMA" is spared.
+    """
+    periods = _period_keys(context) if context is not None else set()
+    if not periods:
+        return None
+    alternatives = "|".join(sorted((re.escape(p) for p in periods), key=len, reverse=True))
+    return re.compile(
+        rf"\b(?:{alternatives})[ -]?{_PERIOD_UNITS}\b"
+        rf"|\b{_PERIOD_UNITS}[ -]?(?:{alternatives})\b",
+        re.IGNORECASE,
+    )
+
+
+def _period_keys(node: Any, out: set[str] | None = None) -> set[str]:
+    """Every dict key in the context that is a bare integer."""
+    found = out if out is not None else set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if str(key).isdigit():
+                found.add(str(key))
+            _period_keys(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            _period_keys(value, found)
+    return found
 
 #: Relative tolerance when comparing a claimed price to a context value. The
 #: context is emitted rounded to 4 decimals, so an exact match is expected;
@@ -57,6 +93,11 @@ class Finding(StrEnum):
     VALUE_MISMATCH = "VALUE_MISMATCH"
     UNGROUNDED_PRICE = "UNGROUNDED_PRICE"
     NUMBER_IN_PROSE = "NUMBER_IN_PROSE"
+    #: A concession, not a defect: the citation did not resolve as written but
+    #: named exactly one field in the context, so the value was still checked
+    #: by exact lookup. Recorded because a model needing this is not the same
+    #: as one that does not, and the difference should be visible.
+    FIELD_PATH_IMPRECISE = "FIELD_PATH_IMPRECISE"
 
 
 @dataclass(frozen=True)
@@ -69,6 +110,9 @@ class GroundingIssue:
 @dataclass
 class GroundingReport:
     issues: list[GroundingIssue] = field(default_factory=list)
+    #: Recoverable imprecision. Kept out of `issues` so it cannot fail
+    #: `is_grounded`, kept in the report so it cannot be forgotten.
+    concessions: list[GroundingIssue] = field(default_factory=list)
     #: Numeric claims that resolved to a real context value.
     grounded_claims: int = 0
     #: Numeric claims checked in total.
@@ -84,7 +128,7 @@ class GroundingReport:
 
     def counts(self) -> dict[str, int]:
         out: dict[str, int] = {}
-        for issue in self.issues:
+        for issue in (*self.issues, *self.concessions):
             out[issue.finding.value] = out.get(issue.finding.value, 0) + 1
         return out
 
@@ -109,15 +153,83 @@ def resolve_path(context: dict[str, Any], path: str) -> tuple[bool, Any]:
                 return False, None
             node = node[token]
         elif isinstance(node, list):
-            if not token.lstrip("-").isdigit():
-                return False, None
-            index = int(token)
-            if not -len(node) <= index < len(node):
-                return False, None
-            node = node[index]
+            if token.lstrip("-").isdigit():
+                index = int(token)
+                if not -len(node) <= index < len(node):
+                    return False, None
+                node = node[index]
+            else:
+                # Identity lookup: `levels.L3.price`, or a candle named by its
+                # own timestamp. Positional citation into a list is the one
+                # thing models measurably cannot do - see `_IDENTITY_KEYS`.
+                match = _by_identity(node, token)
+                if match is None:
+                    return False, None
+                node = match
         else:
             return False, None
     return True, node
+
+
+#: Fields whose value may be used to name an element of a list. `id` is
+#: assigned by the engine; `t` and `timestamp` are the natural identity of a
+#: bar and a swing and were already there.
+_IDENTITY_KEYS: tuple[str, ...] = ("id", "t", "timestamp")
+
+
+def _by_identity(items: list[Any], token: str) -> Any | None:
+    needle = token.strip().lower()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key in _IDENTITY_KEYS:
+            value = item.get(key)
+            if value is not None and str(value).strip().lower() == needle:
+                return item
+    return None
+
+
+def all_paths(node: Any, prefix: str = "") -> Iterator[str]:
+    """Every addressable path in the context, in `resolve_path` syntax."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            yield path
+            yield from all_paths(value, path)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            path = f"{prefix}[{index}]"
+            yield path
+            yield from all_paths(value, path)
+
+
+def resolve_citation(context: dict[str, Any], path: str) -> tuple[bool, Any, str | None]:
+    """`resolve_path`, plus a fallback for a citation missing its prefix.
+
+    Measured on 919 real citations: the single commonest defect was writing
+    `close_vs_ema.200` for `indicators.close_vs_ema.200` - the number correct,
+    the address short of its root. Accepting a suffix that names *exactly one*
+    field keeps the guarantee that matters, because resolution is still an
+    exact lookup and a wrong value still fails. Two matches is not a citation,
+    so `ema.20` - which exists under both `indicators` and `higher_timeframe` -
+    remains an error.
+
+    Returns `(found, value, concession)`, where `concession` is the message to
+    record when the path only resolved via the fallback.
+    """
+    found, value = resolve_path(context, path)
+    if found:
+        return True, value, None
+
+    suffix = "." + path.strip().lstrip(".")
+    matches = [p for p in all_paths(context) if p.endswith(suffix)]
+    if len(matches) != 1:
+        return False, None, None
+
+    found, value = resolve_path(context, matches[0])
+    if not found:
+        return False, None, None
+    return True, value, f"cited {path!r}; resolved uniquely to {matches[0]!r}"
 
 
 def collect_numeric_values(node: Any, out: set[float] | None = None) -> set[float]:
@@ -173,7 +285,7 @@ def verify(analysis: TeacherAnalysis, context: dict[str, Any]) -> GroundingRepor
                     report, context, allowed, f"scenarios[{index}].{name}", price, None
                 )
 
-    _check_prose(report, analysis)
+    _check_prose(report, analysis, _prose_allowances(context))
     return report
 
 
@@ -185,7 +297,11 @@ def _check_citation(
     evidence: Any,
 ) -> None:
     report.total_claims += 1
-    found, actual = resolve_path(context, evidence.context_field)
+    found, actual, concession = resolve_citation(context, evidence.context_field)
+    if found and concession:
+        report.concessions.append(
+            GroundingIssue(Finding.FIELD_PATH_IMPRECISE, location, concession)
+        )
     if not found:
         report.issues.append(
             GroundingIssue(
@@ -243,8 +359,12 @@ def _check_price(
     report.total_claims += 1
 
     if path:
-        found, actual = resolve_path(context, path)
+        found, actual, concession = resolve_citation(context, path)
         if found and isinstance(actual, (int, float)) and _close(price, float(actual)):
+            if concession:
+                report.concessions.append(
+                    GroundingIssue(Finding.FIELD_PATH_IMPRECISE, location, concession)
+                )
             report.grounded_claims += 1
             return
 
@@ -280,9 +400,13 @@ PROSE_FIELDS: tuple[str, ...] = (
 )
 
 
-def _check_prose(report: GroundingReport, analysis: TeacherAnalysis) -> None:
+def _check_prose(
+    report: GroundingReport,
+    analysis: TeacherAnalysis,
+    allowances: re.Pattern[str] | None = None,
+) -> None:
     def scan(location: str, text: str) -> None:
-        cleaned = _PROSE_ALLOWANCES.sub(" ", text or "")
+        cleaned = allowances.sub(" ", text or "") if allowances else (text or "")
         for match in _NUMBER.finditer(cleaned):
             report.issues.append(
                 GroundingIssue(

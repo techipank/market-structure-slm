@@ -15,6 +15,7 @@ from pathlib import Path
 from data_pipeline.config import DEFAULT_CONFIG, load_config
 from data_pipeline.ingest import IngestError, fetch
 from data_pipeline.report import Verdict
+from data_pipeline.screen import load_candidates, render, screen_symbols, to_frame
 from data_pipeline.validate import validate_file, write_report
 
 DISCLAIMER = "Educational/research use only. Not trading advice."
@@ -33,6 +34,35 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
         print(f"[OK]   {spec.symbol} {spec.interval} -> {csv_path}")
         print(f"       lineage -> {sidecar}")
     return 2 if failures and failures == len(cfg.symbols) else 0
+
+
+def _cmd_screen(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    candidates = load_candidates(Path(args.candidates))
+    if not candidates:
+        print(f"no candidates in {args.candidates}", file=sys.stderr)
+        return 2
+
+    total = sum(len(v) for v in candidates.values())
+    print(f"screening {total} candidates across {len(candidates)} sectors over {args.period}...")
+    results, missing = screen_symbols(candidates, period=args.period)
+    if missing:
+        # A renamed or delisted ticker should cost a line of output, not a run.
+        print(f"no data for {len(missing)}: {', '.join(sorted(missing))}", file=sys.stderr)
+    frame = to_frame(results)
+    if frame.empty:
+        print("no candidate returned usable data", file=sys.stderr)
+        return 2
+
+    sectors = {sym: sector for sector, syms in candidates.items() for sym in syms}
+    frame["sector"] = frame["symbol"].map(sectors)
+    out = Path(args.out or (cfg.report_dir / "screen.csv"))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(out, index=False)
+
+    print(render(frame, args.min_turnover, args.top))
+    print(f"wrote {len(frame)} rows -> {out}")
+    return 0
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -81,6 +111,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_fetch = sub.add_parser("fetch", help="download OHLCV from yfinance into data/raw")
     p_fetch.add_argument("--force", action="store_true", help="overwrite existing raw files")
     p_fetch.set_defaults(func=_cmd_fetch)
+
+    p_screen = sub.add_parser(
+        "screen", help="measure candidate instruments before adding them to the universe"
+    )
+    p_screen.add_argument("--candidates", default="configs/screen_universe.yaml")
+    p_screen.add_argument("--period", default="2y", help="yfinance period to measure over")
+    p_screen.add_argument(
+        "--min-turnover", type=float, default=100.0,
+        help="turnover floor in Rs. crore; below this a name is reported as thin",
+    )
+    p_screen.add_argument("--top", type=int, default=60, help="rows to print (all are written)")
+    p_screen.add_argument("--out", help="CSV destination (default: <report_dir>/screen.csv)")
+    p_screen.set_defaults(func=_cmd_screen)
 
     p_val = sub.add_parser("validate", help="run the check suite and write reports")
     p_val.add_argument("path", nargs="?", help="CSV file or directory (default: config raw_dir)")

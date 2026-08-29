@@ -397,7 +397,12 @@ def test_setups_are_evidence_bearing():
     assert seen, "fixture produced no setups at all; the rules may be unreachable"
 
 
-@pytest.mark.parametrize("name", ["SPY_1d", "AAPL_1d"])
+@pytest.mark.parametrize(
+    # Discovered, not hardcoded: naming files explicitly turns every one of
+    # these into a silent skip the moment the symbol universe changes.
+    "name",
+    [p.stem for p in sorted(Path("data/raw").glob("*_1d.csv"))][:3] or ["<no data>"],
+)
 def test_every_rule_is_reachable_on_real_data(name: str):
     """A rule that never fires on eleven years of data is dead code.
 

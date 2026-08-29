@@ -227,12 +227,14 @@ def test_context_json_is_compact():
     assert '"symbol":"SPY"' in rendered  # no space after the colon
 
 
-def test_schema_outline_only_added_when_the_decoder_cannot_enforce_it():
+def test_schema_outline_is_sent_in_every_mode():
+    """Strict decoding included: a provider can accept `response_format` and
+    ignore it, leaving the prompt as the only statement of the field names."""
     runner = TeacherRunner(StubProvider([]))
-    strict = runner.render_messages(CONTEXT, StructuredMode.JSON_SCHEMA)
-    loose = runner.render_messages(CONTEXT, StructuredMode.JSON_OBJECT)
-    assert "Required output shape" not in strict[0]["content"]
-    assert "Required output shape" in loose[0]["content"]
+    for mode in StructuredMode:
+        system = runner.render_messages(CONTEXT, mode)[0]["content"]
+        assert "Required output shape" in system, mode
+        assert "market_structure" in system, mode
 
 
 # ----------------------------------------------------------------- parsing
@@ -241,6 +243,21 @@ def test_schema_outline_only_added_when_the_decoder_cannot_enforce_it():
 def test_parse_strips_markdown_fences():
     text = "```json\n" + json.dumps(valid_payload()) + "\n```"
     assert parse_analysis(text).market_state.value == "TRENDING_UP"
+
+
+def test_parse_ignores_braces_in_leading_chain_of_thought():
+    """Reasoning emitted into `content` with no delimiter, containing braces
+    and a half-written draft of the answer. Observed on nemotron once the
+    provider ignored `response_format`. Spanning first-brace to last-brace
+    splices the thinking into the payload; the answer is the last balanced
+    object that validates."""
+    payload = valid_payload()
+    text = (
+        'We need to output {"market_state": ...} with fields {a, b, c}. '
+        'Draft: {"market_state": "TRENDING_UP"} - no, incomplete. '
+        + json.dumps(payload)
+    )
+    assert parse_analysis(text).confidence == payload["confidence"]
 
 
 def test_parse_recovers_json_surrounded_by_chatter():
@@ -368,6 +385,76 @@ def test_a_real_price_cited_at_the_wrong_path_is_a_milder_finding():
     assert Finding.UNGROUNDED_PRICE.value not in counts
 
 
+def test_citation_missing_its_prefix_resolves_but_is_recorded():
+    """Measured as the commonest citation defect on real runs. Accepting a
+    unique suffix keeps the guarantee - it is still an exact lookup, and a
+    wrong value still fails - but the concession is visible in the report."""
+    payload = valid_payload()
+    payload["supporting_evidence"][0] = {
+        "statement": "The trend is expansionary",
+        "context_field": "ema.20",          # short of its `indicators.` root
+        "value": "763.7263",
+    }
+    report = verify(TeacherAnalysis.model_validate(payload), CONTEXT)
+    assert report.is_grounded
+    assert Finding.FIELD_PATH_IMPRECISE.value in report.counts()
+    assert Finding.UNRESOLVABLE_FIELD.value not in report.counts()
+
+
+def test_an_ambiguous_suffix_is_not_a_citation():
+    """Two matches is not an address. `last_event.level` exists under both
+    `structure` and `higher_timeframe`, so it stays unresolvable."""
+    context = {
+        **CONTEXT,
+        "higher_timeframe": {"last_event": {"level": 776.85}},
+    }
+    payload = valid_payload()
+    payload["supporting_evidence"][0] = {
+        "statement": "A break happened here",
+        "context_field": "last_event.level",
+        "value": "776.85",
+    }
+    report = verify(TeacherAnalysis.model_validate(payload), context)
+    assert Finding.UNRESOLVABLE_FIELD.value in report.counts()
+    assert not report.is_grounded
+
+
+def test_a_wrong_value_still_fails_when_the_suffix_resolves():
+    """The tolerance is about addressing, not about the number."""
+    payload = valid_payload()
+    payload["supporting_evidence"][0] = {
+        "statement": "The trend is expansionary",
+        "context_field": "ema.20",
+        "value": "999.99",
+    }
+    report = verify(TeacherAnalysis.model_validate(payload), CONTEXT)
+    assert Finding.VALUE_MISMATCH.value in report.counts()
+    assert not report.is_grounded
+
+
+def test_list_elements_can_be_cited_by_identity():
+    """Positional citation into a list is the one thing models measurably
+    cannot do; naming the element sidesteps counting entirely."""
+    context = {
+        **CONTEXT,
+        "levels": [
+            {"id": "L0", "price": 739.51, "side": "SUPPORT"},
+            {"id": "L1", "price": 781.02, "side": "RESISTANCE"},
+        ],
+    }
+    found, value = resolve_path(context, "levels.L1.price")
+    assert (found, value) == (True, 781.02)
+    # A candle is named by the timestamp it already carries.
+    found, value = resolve_path(context, "ohlcv_window.2026-08-21T00:00:00+00:00.c")
+    assert (found, value) == (True, 768.5)
+    assert resolve_path(context, "levels.L7.price") == (False, None)
+
+
+def test_positional_citation_still_works():
+    """The identity lookup is additive: nothing that resolved before stops."""
+    assert resolve_path(CONTEXT, "levels[0].price") == (True, 739.51)
+
+
 def test_numbers_in_prose_are_rejected():
     payload = valid_payload()
     payload["reasoning_summary"] = "Price is holding above 763.73 with room to run."
@@ -375,11 +462,42 @@ def test_numbers_in_prose_are_rejected():
     assert Finding.NUMBER_IN_PROSE.value in report.counts()
 
 
-def test_prose_may_name_an_indicator_period():
+def test_prose_may_name_a_period_the_engine_actually_computed():
+    """The exemption is derived from the context's own keys, so it tracks the
+    engine's parameters instead of a hardcoded list. CONTEXT has a 20 EMA and
+    no 50, and naming a series the engine never computed is still a claim
+    about something the reader cannot check."""
     payload = valid_payload()
-    payload["reasoning_summary"] = "Price is holding above the 20 EMA and the 50 EMA."
-    report = verify(TeacherAnalysis.model_validate(payload), CONTEXT)
-    assert Finding.NUMBER_IN_PROSE.value not in report.counts()
+    payload["reasoning_summary"] = "Price is holding above the 20 EMA."
+    assert Finding.NUMBER_IN_PROSE.value not in verify(
+        TeacherAnalysis.model_validate(payload), CONTEXT
+    ).counts()
+
+    payload["reasoning_summary"] = "Price is holding above the 50 EMA."
+    assert Finding.NUMBER_IN_PROSE.value in verify(
+        TeacherAnalysis.model_validate(payload), CONTEXT
+    ).counts()
+
+
+def test_prose_exemption_requires_the_unit_word():
+    """Otherwise the exemption would launder any number that happens to equal
+    a period - "the RSI has rolled below 20" is a threshold claim, not a name."""
+    payload = valid_payload()
+    payload["reasoning_summary"] = "The RSI has rolled below 20."
+    assert Finding.NUMBER_IN_PROSE.value in verify(
+        TeacherAnalysis.model_validate(payload), CONTEXT
+    ).counts()
+
+
+def test_prose_allows_the_written_out_period_forms_models_actually_use():
+    payload = valid_payload()
+    for phrasing in ("the 20-day exponential moving average",
+                     "the 20 period moving average",
+                     "the EMA 20"):
+        payload["reasoning_summary"] = f"Price is holding above {phrasing}."
+        assert Finding.NUMBER_IN_PROSE.value not in verify(
+            TeacherAnalysis.model_validate(payload), CONTEXT
+        ).counts(), phrasing
 
 
 def test_grounding_is_reported_even_when_it_fails():
@@ -447,6 +565,18 @@ def test_missing_model_raises(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     with pytest.raises(ValueError, match="TEACHER_MODEL"):
         OpenRouterConfig.from_env()
+
+
+def test_extra_body_is_merged_and_wins():
+    """How a hybrid reasoning model is told to stop thinking. Merged last so
+    a per-model override beats anything the request builder chose."""
+    config = OpenRouterConfig(
+        model="m", api_key="k",
+        extra_body={"reasoning": {"enabled": False}, "max_tokens": 2048},
+    )
+    body = OpenRouterProvider(config)._body([], None, "n", StructuredMode.NONE)
+    assert body["reasoning"] == {"enabled": False}
+    assert body["max_tokens"] == 2048
 
 
 def test_request_body_shape():

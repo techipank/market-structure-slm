@@ -37,7 +37,15 @@ setup_fast_ema: 20
 setup_slow_ema: 50
 
 # --- context payload (drives teacher prompt cost) ---
-ohlcv_window_bars: 60
+# 100, not 60, and chosen by measurement. The context cites swings by
+# `bars_ago`; anything older than the window is a fact the model is told about
+# but cannot see, which invites it to attach the claim to the wrong visible
+# bar. Measured over the 170 benchmark examples, the fraction of cited swings
+# falling outside the window is 33.8% at 30 bars, 1.0% at 60, and 0% at 100
+# (the oldest cited swing reaches 79 bars back). 60 is the cost/coverage knee
+# at 99%; 100 is the smallest window that makes "everything cited is visible"
+# actually true, and accuracy was chosen over token cost here.
+ohlcv_window_bars: 100
 max_swings_in_context: 8
 
 # --- rounding ---

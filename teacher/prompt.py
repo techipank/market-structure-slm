@@ -89,16 +89,19 @@ def build_messages(
 ) -> list[dict[str, str]]:
     """Two messages: a stable system prompt and the per-example context.
 
-    `schema_outline` is appended to the system message only when the provider
-    cannot enforce the schema during decoding. Sending it unconditionally
-    would waste tokens on every request for models that do not need it.
+    `schema_outline` is appended to the system message whenever it is given.
+    It costs a few hundred prompt tokens, and it is worth them even when
+    `response_format` is also sent: a provider that does not support
+    structured outputs accepts the request and ignores the constraint, and a
+    model that was never told the field names then invents its own. Observed
+    on nvidia/nemotron-3.5-lightning, which wrote a well-formed object made
+    entirely of keys we do not have.
     """
     system = template.system
     if schema_outline:
         system = (
             f"{system}\n\n## Required output shape\n\n"
-            "Your provider cannot enforce the schema during decoding, so it is "
-            "given here. Emit exactly these fields.\n\n"
+            "Emit exactly these fields, and only these fields.\n\n"
             f"{schema_outline}\n"
         )
     return [

@@ -90,7 +90,7 @@ A real price cited at the wrong path is reported as `UNRESOLVABLE_FIELD`, not
 and lumping them together would misstate how often the model actually invents
 things.
 
-Verified end to end against a real SPY context: a well-formed analysis scores
+Verified end to end against a real market context: a well-formed analysis scores
 5/5 grounded with no issues, and three separately injected faults are each
 caught by exactly the intended finding.
 
@@ -139,14 +139,14 @@ would defeat caching at dataset scale.
 
 ## Cost per example
 
-Measured on a real SPY daily context:
+Measured on a real INFY.NS daily context:
 
 | component | chars | ≈ tokens | notes |
 |---|---|---|---|
 | system prompt | 4,849 | 1,212 | identical every call; cacheable |
-| user message (context) | 9,223 | 2,305 | varies per example |
+| user message (context) | 9,592 | 2,398 | varies per example |
 | `response_format` schema | 6,334 | 1,583 | sent every call |
-| **total input** | | **≈ 5,100** | |
+| **total input** | | **≈ 5,200** | |
 
 The context was originally pretty-printed, which cost **1,285 extra tokens per
 example — 37% of the payload — to transmit whitespace**. Over a
@@ -157,6 +157,158 @@ Remaining levers, in order of size: the response schema (1,583 tokens on every
 call, unavoidable in strict mode), the candle window (`ohlcv_window_bars`,
 halving it saves roughly 1,000 tokens), and prompt caching where the provider
 supports it.
+
+## What the first live calls taught us
+
+Everything below was found by actually calling a model, and each one had
+shipped as a bug. They are recorded because the same mistakes are easy to make
+again, and because several contradict what this document originally claimed.
+
+**`require_parameters` filters on declared capability, not real capability.**
+This document argued the flag turns invisible degradation into a loud failure.
+True, but incomplete: it also produces **false negatives**. OpenRouter refused
+to route a strict `json_schema` request to `stealth/ox-alpha` because its
+provider does not advertise structured outputs — yet the identical request
+succeeds and returns valid schema-conforming JSON once the flag is dropped.
+
+```
+json_schema strict + require_parameters   404  No endpoints found...
+json_schema strict, no require            200  {"ok":true}
+```
+
+The harness now relaxes the flag once on that specific rejection and records
+the concession on the result. Dropping it is safe here in a way it would not
+be in general: `response_format` is still sent, so a provider that silently
+ignores it produces output that fails pydantic validation and the repair loop
+catches it. The gate was guarding against a failure we already detect
+downstream, at the price of rejecting models that work.
+
+The rejection also arrives as a **404 with different wording** from the
+documented 503 phrasing, which is why the first classifier missed it.
+
+**A weaker structured mode can be worse than a stronger one.** The fallback
+ladder assumed `JSON_SCHEMA → JSON_OBJECT → NONE` is monotonically more
+permissive. On `ox-alpha`, `json_object` returns an *empty* body while
+`json_schema` works. Empty output under a structured request is therefore
+treated as a capability failure that steps the mode down, not a transient
+blip that retries the same doomed call.
+
+**Reasoning models can spend the entire output budget thinking.** At
+`max_tokens: 4096`, `ox-alpha` produced `finish_reason: "length"`, zero
+characters of content, and 12,032 characters of reasoning. There is now a
+distinct `Truncated` error that names the remedy, because neither retrying
+nor stepping down the mode addresses it. Note the provider's own
+`completion_tokens_details.reasoning_tokens` reported **0** for that call, so
+that field cannot be trusted to detect the condition.
+
+**Timeouts must not be retried.** A request that was too slow will be too slow
+again. Four retries at a 120s deadline is eight wasted minutes before the mode
+fallback even starts — which is how one smoke call consumed fifteen minutes
+and returned nothing.
+
+**The token estimate was 43% low.** `chars/4` predicted 6,117 input tokens
+where the provider billed 8,752. JSON punctuation and ISO timestamps tokenise
+far worse than prose. `msteacher dry-run` now prints both the floor and a
+calibrated figure, and any real cost projection should use measured
+`prompt_tokens` from a smoke call instead.
+
+**A provider can accept `response_format` and ignore it, and a model that was
+never told the field names will invent its own.** `nvidia/nemotron-3.5-lightning`
+is served by a provider that does not declare structured outputs, so every
+request trips the `require_parameters` gate and is retried with routing
+relaxed. The request then succeeds, the schema is discarded, and the model —
+which in strict mode was deliberately *not* sent the schema outline, since the
+decoder was supposed to enforce it — reasoned in its own output about not
+having been given one, then produced a clean JSON object made entirely of keys
+we do not have. The outline is now sent in **every** mode. It costs about 900
+prompt tokens, roughly 8% of a request, and it is the difference between a
+recoverable answer and an unparseable one whenever the constraint is dropped.
+
+**The chain-of-thought arrives inside `content`, undelimited.** The same model
+emits reasoning and answer in one field with no marker between them. The
+parser's "first `{` to last `}`" recovery then splices thinking into the
+payload and dies on a stray delimiter, because reasoning prose contains braces
+and half-written drafts of the answer. Parsing now scans for *balanced*
+top-level objects, string-aware, and prefers the last one that validates.
+
+**Turning reasoning off can be a twelve-fold speedup, and here it is also
+the correct design.** Left on, nemotron spent 10,832 reasoning tokens before
+the answer began, ran out of budget mid-object, and failed three attempts in
+twenty-one minutes. With `reasoning: {"enabled": false}` on the same example
+and prompt: valid on the first attempt, 975 completion tokens, 33 seconds.
+
+That is worth stating as a principle rather than a tuning tip. The market
+engine already did the hard reasoning deterministically; the teacher's job is
+to interpret facts it is handed, not to re-derive structure from raw candles.
+A model burning twelve thousand characters rediscovering what the context
+already states is both slow and displaying exactly the behaviour most likely
+to produce ungrounded numbers. `extra_body` on the OpenRouter config is the
+seam for saying so per model.
+
+One encouraging measurement from the same response: `cached_tokens: 8704` of
+8,752, meaning almost the whole prompt was served from cache. That vindicates
+keeping the system prompt byte-stable and putting the per-example context in
+the user message.
+
+## Citations name things; they do not count them
+
+The first benchmark run produced a result worth keeping: **95.5% of numeric
+claims were grounded, but only 30% of examples were.** `is_grounded` is
+all-or-nothing per example, so one bad citation in fifteen sinks the example.
+
+The defects were not what the design anticipated. Across 919 claims there were
+**zero ungrounded prices** - the model never invented a number. What it got
+wrong was addressing:
+
+* 27 citations dropped the root, writing `close_vs_ema.200` for
+  `indicators.close_vs_ema.200`.
+* Nearly all the rest were **positional**: `levels[4].price` when the price
+  sat at a different index, `ohlcv_window[101].c` when the window holds 100
+  bars, `ohlcv_window[86].c` quoted with the value from another bar.
+
+The pattern is sharp. Citations to *named scalars* - `indicators.rsi`,
+`structure.last_event.type` - were essentially perfect. Citations to
+*positions in arrays* were where it broke, and counting list positions is a
+weakness no amount of prompt instruction repairs.
+
+So the context changed rather than the instruction: every level and swing now
+carries a stable `id` (`L0`, `S4`), candles already carried their timestamp,
+and the resolver accepts `levels.L2.price` or
+`ohlcv_window.2016-07-22T00:00:00+00:00.c`. The model copies an identifier
+sitting beside the value it is quoting instead of counting to it.
+
+Measured on the same 30 examples, same model, same temperature:
+
+```
+                                         examples grounded   claims grounded
+before, strict verifier                    20/60  (33.3%)          95.5%
+after,  strict verifier                    37/60  (61.7%)         100.0%
+after,  shipped verifier                   55/60  (91.7%)         100.0%
+```
+
+Of 684 citations in the second run, **not one was positional**: 76.8% named
+scalars, 23.2% by identity. Claim-level grounding reached 100%.
+
+Two verifier changes account for the rest of the gap, and it is worth being
+precise about which did what:
+
+* **Unique-suffix resolution.** A citation that does not resolve as written
+  but names exactly one field in the context is resolved to it, and the
+  concession is recorded as `FIELD_PATH_IMPRECISE` so a model needing it is
+  distinguishable from one that does not. Ambiguity is still failure:
+  `ema.20` exists under both `indicators` and `higher_timeframe`. **It fired
+  zero times in the second run** - the prompt rule "start at a top-level key"
+  removed the defect at source. It stays as a net for other models.
+* **Naming an indicator period is not a numeric claim.** "The 200-day EMA"
+  identifies a series; "RSI below 55" is a claim about the market. The
+  exemption is derived from the context's own integer keys, so it tracks the
+  engine's parameters and cannot excuse a period the engine never computed,
+  and it requires the unit word so a bare number stays a violation. This is
+  the change that carried 61.7% to 91.7%, so it should be read as a
+  correction to an over-broad rule, not as evidence about the model.
+
+The five residual failures are all real: two threshold claims and one price in
+prose, one wrong level id, and one citation into an empty `setups` array.
 
 ## Reproducibility, and why it is weaker here
 

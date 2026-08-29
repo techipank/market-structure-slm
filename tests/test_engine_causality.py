@@ -21,14 +21,25 @@ from market_engine.params import EngineParams
 RAW = Path("data/raw")
 PKG = Path(__file__).resolve().parents[1] / "market_engine"
 
+def _discover() -> list[tuple[str, str]]:
+    """Whatever is actually in data/raw, not a hardcoded list.
+
+    An earlier version named the files explicitly. When the symbol universe
+    changed, every one of those tests silently turned into a skip - including
+    truncation invariance, the single most important test here. A test that
+    stops running because its fixture was renamed protects nothing, and it
+    does so quietly. Discovering the files makes the suite follow the data.
+    """
+    out: list[tuple[str, str]] = []
+    for path in sorted(RAW.glob("*.csv")):
+        _, _, interval = path.stem.rpartition("_")
+        out.append((path.name, interval or "1d"))
+    return out
+
+
 #: Real fetched data is gitignored, so these tests skip when it is absent
 #: rather than failing a clean checkout. Locally they are the real check.
-REAL_FILES = [
-    ("SPY_1d.csv", "1d"),
-    ("AAPL_1d.csv", "1d"),
-    ("IDX_VIX_1d.csv", "1d"),
-    ("SPY_1h.csv", "1h"),
-]
+REAL_FILES = _discover() or [("<no data fetched>", "1d")]
 
 
 def _load(name: str):

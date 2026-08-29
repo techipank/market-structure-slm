@@ -111,6 +111,10 @@ def test_normalise_flattens_multiindex_and_renames():
 def test_fetch_spec_stem_is_filesystem_safe():
     assert FetchSpec("^VIX", "1d").stem == "IDX_VIX_1d"
     assert FetchSpec("EURUSD=X", "1h").stem == "EURUSD_X_1h"
+    # NSE tickers: a dot would confuse suffix handling, an ampersand is a
+    # shell metacharacter.
+    assert FetchSpec("RELIANCE.NS", "1d").stem == "RELIANCE_NS_1d"
+    assert FetchSpec("M&M.NS", "1d").stem == "M_M_NS_1d"
 
 
 # ------------------------------------------------------------- CLI contract
@@ -182,3 +186,36 @@ def test_declared_interval_read_from_lineage_sidecar(tmp_path: Path):
     report = validate_file(csv)
     assert report.dataset.declared_interval == "1d"
     assert report.verdict in (Verdict.PASS, Verdict.PASS_WITH_WARNINGS)
+
+
+def test_unclosed_trailing_bar_is_dropped_and_recorded():
+    """Fetching during market hours returns today's bar as nulls. Archiving it
+    fails the missing-values check on every file - a gate crying wolf."""
+    from data_pipeline.ingest import _drop_unclosed_tail
+
+    # Shaped on what the source actually returns: the forming bar has traded,
+    # so open, high, low and volume are populated and only `close` is absent.
+    frame = pd.DataFrame({
+        "datetime": pd.to_datetime(["2026-08-21", "2026-08-24"], utc=True),
+        "open": [10.0, 10.6], "high": [11.0, 10.9],
+        "low": [9.0, 10.2], "close": [10.5, float("nan")],
+        "volume": [100.0, 83251.0],
+    })
+    kept, dropped = _drop_unclosed_tail(frame)
+    assert len(kept) == 1
+    assert dropped is not None and dropped.startswith("2026-08-24")
+
+
+def test_a_hole_in_the_middle_is_not_dropped():
+    """Only the last row, and only when every price is null. A null mid-series
+    is a genuine data hole and must still fail validation."""
+    from data_pipeline.ingest import _drop_unclosed_tail
+
+    frame = pd.DataFrame({
+        "datetime": pd.to_datetime(["2026-08-20", "2026-08-21", "2026-08-24"], utc=True),
+        "open": [10.0, float("nan"), 12.0], "high": [11.0, float("nan"), 13.0],
+        "low": [9.0, float("nan"), 11.0], "close": [10.5, float("nan"), 12.5],
+        "volume": [100.0, 0.0, 90.0],
+    })
+    kept, dropped = _drop_unclosed_tail(frame)
+    assert len(kept) == 3 and dropped is None

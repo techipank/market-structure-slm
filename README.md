@@ -98,7 +98,7 @@ Human-readable summary of what the engine sees in each file:
 Emit a context for the most recent bar:
 
 ```bash
-.venv/Scripts/msengine.exe context data/raw/SPY_1d.csv --bar -1
+.venv/Scripts/msengine.exe context data/raw/INFY_NS_1d.csv --bar -1
 ```
 
 Regenerate the data dictionary from the schema:
@@ -143,13 +143,13 @@ Fill in `OPENROUTER_API_KEY` and `TEACHER_MODEL`. `.env` is gitignored.
 Render the exact prompt and estimate its size without calling anything:
 
 ```bash
-.venv/Scripts/msteacher.exe dry-run data/raw/SPY_1d.csv --show
+.venv/Scripts/msteacher.exe dry-run data/raw/INFY_NS_1d.csv --show
 ```
 
 Run the teacher over one bar:
 
 ```bash
-.venv/Scripts/msteacher.exe analyse data/raw/SPY_1d.csv --bar -1
+.venv/Scripts/msteacher.exe analyse data/raw/INFY_NS_1d.csv --bar -1
 ```
 
 Output is validated against a strict pydantic schema, and every number the
@@ -177,6 +177,61 @@ no cost.
 - [docs/teacher.md](docs/teacher.md) — structured-output mechanisms, schema
   design for cheap verification, prompt choices, cost per example.
 
+## Teacher benchmark
+
+Choosing the teacher is the highest-leverage decision here: every training
+label comes from it. So it is an experiment, not a preference. Cheapest step
+first:
+
+```bash
+.venv/Scripts/msbench.exe sample
+```
+
+Builds a stratified example set and freezes it to disk — every model then sees
+byte-identical inputs. Free.
+
+```bash
+.venv/Scripts/msbench.exe smoke --model anthropic/claude-sonnet-4.5
+```
+
+One call, to prove a model works end to end before spending on a fan-out.
+
+```bash
+.venv/Scripts/msbench.exe run --model A --model B --model C
+```
+
+```bash
+.venv/Scripts/msbench.exe report
+```
+
+Produces `teacher_benchmark.csv` and a markdown report with the quality / cost
+/ latency tradeoff, an argued recommendation, and a projected cost for the full
+dataset.
+
+### What the sampling protects against
+
+- **Near-duplicates** — adjacent bars share 59 of 60 candles. Selected bars are
+  forced far enough apart that no two prompts overlap.
+- **Unbalanced coverage** — round-robin across structure × volatility strata,
+  so rare states are represented rather than swamped.
+- **Holdout contamination** — a hard date cutoff keeps the validation and test
+  eras out of model selection entirely.
+
+### The recommendation is argued, not asserted
+
+Quality is an explicit weighted sum with published weights; gates on
+compliance, grounding, contradictions and latency are applied first and are
+not tradeable. The rule then picks the **cheapest** model within a small
+quality tolerance of the best — because a few points on a 163-example
+benchmark is inside the sampling error, and paying ten times more for it buys
+noise. If nothing clears the gates, the report refuses to recommend anything.
+
+Runs are resumable: results append to a JSONL checkpoint and a re-run skips
+completed work.
+
+- [docs/teacher_benchmark.md](docs/teacher_benchmark.md) — sampling design,
+  metric definitions, contradiction checks, scoring rules.
+
 ## Layout
 
 ```
@@ -186,7 +241,7 @@ market_engine/   Deterministic indicators, structure, regime, setups.
 teacher/         Teacher LLM over OpenRouter: prompts, schema, grounding.
 datasets/        Quality pipeline and chronological splits.
 training/        Base model baseline and LoRA fine-tuning.
-evaluation/      Benchmark suite.
+evaluation/      Metrics, sampling, benchmarking, model recommendation.
 docs/            Design notes.
 tests/
 ```

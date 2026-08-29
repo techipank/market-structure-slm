@@ -18,8 +18,13 @@ import yaml
 DEFAULT_CONFIG = Path("configs/engine.yaml")
 
 #: Bars per year, used to annualise realized volatility. Intraday figures
-#: assume a 6.5-hour US equity session; they are a scaling convention, not a
-#: claim about the instrument's real trading hours.
+#: assume a ~6.5-hour session; they are a scaling convention, not a claim
+#: about any instrument's real trading hours. NSE runs 09:15-15:30 IST (6.25h,
+#: ~250 sessions), so hourly realized volatility on Indian symbols is scaled
+#: about 4% high. That is a constant factor across every NSE bar, so it does
+#: not distort comparisons within the dataset; it is recorded here rather than
+#: special-cased because per-exchange calendars are not worth the machinery
+#: for a cosmetic scaling difference.
 BARS_PER_YEAR: dict[str, float] = {
     "1m": 98_280,
     "5m": 19_656,

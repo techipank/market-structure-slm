@@ -28,7 +28,7 @@ import pandas as pd
 
 from data_pipeline import SCHEMA_VERSION
 from data_pipeline.loaders import sha256_file
-from data_pipeline.schema import CANONICAL_TZ, DATETIME_COL, REQUIRED_COLS
+from data_pipeline.schema import CANONICAL_TZ, DATETIME_COL, PRICE_COLS, REQUIRED_COLS
 
 
 class IngestError(RuntimeError):
@@ -45,7 +45,16 @@ class FetchSpec:
 
     @property
     def stem(self) -> str:
-        safe = self.symbol.replace("^", "IDX_").replace("=", "_").replace("/", "_")
+        """Filesystem- and shell-safe file stem for this fetch.
+
+        NSE tickers carry an exchange suffix (`RELIANCE.NS`) and some carry an
+        ampersand (`M&M.NS`). A dot in the stem confuses suffix handling and an
+        ampersand is a shell metacharacter, so both are normalised. The true
+        symbol is preserved verbatim in the lineage sidecar.
+        """
+        safe = self.symbol
+        for bad, good in (("^", "IDX_"), ("=", "_"), ("/", "_"), (".", "_"), ("&", "_")):
+            safe = safe.replace(bad, good)
         return f"{safe}_{self.interval}"
 
 
@@ -89,6 +98,35 @@ def _normalise(raw: pd.DataFrame) -> pd.DataFrame:
     return df[list(REQUIRED_COLS)]
 
 
+def _drop_unclosed_tail(df: pd.DataFrame) -> tuple[pd.DataFrame, str | None]:
+    """Drop a trailing placeholder row for a bar that has not closed yet.
+
+    Requesting a series "up to today" returns today's bar, and until the
+    session ends yfinance fills it with nulls. Every file fetched during
+    market hours therefore fails the missing-values check on its last row -
+    40 of 40 did, which is a gate crying wolf rather than a gate working.
+
+    This is the one row removal the ingest layer performs, and it is not an
+    alteration of data: a bar that has not closed is not yet an observation,
+    and the engine only ever reasons from fully closed bars. The narrowness
+    matters - only the *last* row. A null in the middle of a series is a
+    genuine hole and must still fail. The lineage sidecar records the
+    timestamp dropped, so the decision is auditable rather than invisible.
+
+    *Any* missing price disqualifies the row, not all of them. A bar that is
+    still trading comes back with open, high, low and volume populated and
+    only `close` null - which is what the source actually returns, as against
+    what the first version of this function assumed. A genuinely closed bar
+    always has a close, so there is no legitimate final row this can eat.
+    """
+    if df.empty:
+        return df, None
+    last = df.iloc[-1]
+    if not last[list(PRICE_COLS)].isna().any():
+        return df, None
+    return df.iloc[:-1].copy(), str(last[DATETIME_COL])
+
+
 def fetch(spec: FetchSpec, out_dir: Path, force: bool = False) -> tuple[Path, Path]:
     import yfinance as yf
 
@@ -124,6 +162,7 @@ def fetch(spec: FetchSpec, out_dir: Path, force: bool = False) -> tuple[Path, Pa
         )
 
     df = _normalise(raw)
+    df, dropped = _drop_unclosed_tail(df)
     df.to_csv(csv_path, index=False)
 
     lineage = {
@@ -138,6 +177,7 @@ def fetch(spec: FetchSpec, out_dir: Path, force: bool = False) -> tuple[Path, Pa
         "auto_adjust": False,
         "storage_timezone": CANONICAL_TZ,
         "rows": int(len(df)),
+        "dropped_unclosed_tail": dropped,
         "first_timestamp": str(df[DATETIME_COL].min()),
         "last_timestamp": str(df[DATETIME_COL].max()),
         "fetched_at": datetime.now(UTC).isoformat(timespec="seconds"),
